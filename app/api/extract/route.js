@@ -15,9 +15,9 @@ Rules:
 - Write in third person using their name if available, otherwise "they"
 - Be specific, avoid vague generalities
 - Extract 3-6 thoughts per category minimum
-- Return ONLY valid JSON, no markdown, no explanation
+- Return ONLY valid JSON with no markdown fences, no backticks, no explanation
 
-Return this exact structure:
+Return this exact structure with no other text:
 {
   "career": ["thought1", "thought2"],
   "role": ["thought1", "thought2"],
@@ -54,8 +54,16 @@ export async function POST(request) {
       return NextResponse.json({ error: err.error?.message || 'Anthropic API error' }, { status: res.status })
     }
     const data = await res.json()
-    const raw = data.content[0].text.replace(/json|/g, '').trim()
-    const extracted = JSON.parse(raw)
+    let raw = data.content[0].text.trim()
+    // Strip markdown code fences in any format
+    raw = raw.replace(/^```[a-zA-Z]*\s*/m, '').replace(/\s*```\s*$/m, '').trim()
+    // Find the JSON object even if there is surrounding text
+    const jsonStart = raw.indexOf('{')
+    const jsonEnd = raw.lastIndexOf('}')
+    if (jsonStart === -1 || jsonEnd === -1) {
+      return NextResponse.json({ error: 'Could not parse extraction result. Please try again.' }, { status: 500 })
+    }
+    const extracted = JSON.parse(raw.slice(jsonStart, jsonEnd + 1))
     return NextResponse.json({ thoughts: extracted })
   } catch (e) {
     return NextResponse.json({ error: 'Extraction failed: ' + e.message }, { status: 500 })
