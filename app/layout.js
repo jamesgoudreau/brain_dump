@@ -1,14 +1,12 @@
-import './globals.css'
-
 export const metadata = {
-  title: 'Open Brain — Onboarding',
-  description: 'Seed your personal AI memory system',
+  title: 'BrainDump — Collect & Store Knowledge',
+  description: 'Send anything to your personal AI memory system',
 }
 
 export default function RootLayout({ children }) {
   return (
     <html lang="en">
-      <body>{children}</body>
+      <body style={{ margin: 0, padding: 0 }}>{children}</body>
     </html>
   )
 }

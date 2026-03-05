@@ -3,79 +3,61 @@ import { useState, useEffect, useRef } from 'react'
 import { useRouter } from 'next/navigation'
 import { createClient } from '../../lib/supabase'
 
-const CATEGORIES = [
-  { id: 'career', label: 'Career History', icon: '◈' },
-  { id: 'role', label: 'Current Role', icon: '◉' },
-  { id: 'goals', label: 'Goals & Priorities', icon: '◎' },
-  { id: 'people', label: 'Key People', icon: '◍' },
-  { id: 'communication', label: 'Communication Style', icon: '◌' },
-]
-
-const CONFIG_FIELDS = [
-  {
-    key: 'supabaseUrl',
-    label: 'Supabase Project URL',
-    placeholder: 'https://xxxx.supabase.co',
-    type: 'text',
-    help: 'Find this in your Supabase project → Settings → API → Project URL',
-    link: 'https://supabase.com/dashboard',
-    linkLabel: 'Open Supabase →',
-  },
-  {
-    key: 'supabaseAnonKey',
-    label: 'Supabase Anon Key',
-    placeholder: 'eyJ...',
-    type: 'password',
-    help: 'Find this in your Supabase project → Settings → API → anon / public key',
-    link: 'https://supabase.com/dashboard',
-    linkLabel: 'Open Supabase →',
-  },
-  {
-    key: 'anthropicKey',
-    label: 'Anthropic API Key',
-    placeholder: 'sk-ant-...',
-    type: 'password',
-    help: 'Find this at console.anthropic.com → API Keys',
-    link: 'https://console.anthropic.com',
-    linkLabel: 'Open Anthropic Console →',
-  },
-]
-
 export default function OnboardPage() {
   const router = useRouter()
   const supabase = createClient()
-  const [user, setUser] = useState(null)
-  const [config, setConfig] = useState(null)
-  const [showConfig, setShowConfig] = useState(false)
-  const [configForm, setConfigForm] = useState({ supabaseUrl: '', supabaseAnonKey: '', anthropicKey: '' })
-  const [expandedHelp, setExpandedHelp] = useState(null)
-  const [testing, setTesting] = useState(false)
-  const [testResult, setTestResult] = useState(null)
-  const [text, setText] = useState('')
-  const [step, setStep] = useState('input')
-  const [thoughts, setThoughts] = useState(null)
-  const [saving, setSaving] = useState({})
-  const [saved, setSaved] = useState({})
-  const [saveCount, setSaveCount] = useState(0)
-  const [totalCount, setTotalCount] = useState(0)
-  const [error, setError] = useState(null)
-  const [pdfFile, setPdfFile] = useState(null)
   const fileInputRef = useRef(null)
+
+  const [user, setUser] = useState(null)
+  const [webhookUrl, setWebhookUrl] = useState('')
+  const [webhookSaved, setWebhookSaved] = useState(false)
+  const [showSetup, setShowSetup] = useState(false)
+  const [webhookInput, setWebhookInput] = useState('')
+  const [savingWebhook, setSavingWebhook] = useState(false)
+
+  const [text, setText] = useState('')
+  const [pdfFile, setPdfFile] = useState(null)
+  const [sending, setSending] = useState(false)
+  const [sent, setSent] = useState(false)
+  const [error, setError] = useState(null)
 
   useEffect(() => {
     supabase.auth.getUser().then(({ data }) => {
       if (!data.user) { router.push('/'); return }
       setUser(data.user)
-      const stored = localStorage.getItem('open-brain-config')
-      if (stored) {
-        const parsed = JSON.parse(stored)
-        setConfig(parsed)
-        setConfigForm(parsed)
-      } else {
-        setShowConfig(true)
-      }
+      loadWebhook(data.user.id)
     })
   }, [])
+
+  async function loadWebhook(userId) {
+    const { data } = await supabase
+      .from('profiles')
+      .select('webhook_url')
+      .eq('id', userId)
+      .single()
+    if (data?.webhook_url) {
+      setWebhookUrl(data.webhook_url)
+      setWebhookInput(data.webhook_url)
+      setWebhookSaved(true)
+    } else {
+      setShowSetup(true)
+    }
+  }
+
+  async function saveWebhook(e) {
+    e.preventDefault()
+    if (!webhookInput.trim()) return
+    setSavingWebhook(true)
+    const { error } = await supabase
+      .from('profiles')
+      .upsert({ id: user.id, webhook_url: webhookInput.trim(), updated_at: new Date().toISOString() })
+    if (!error) {
+      setWebhookUrl(webhookInput.trim())
+      setWebhookSaved(true)
+      setShowSetup(false)
+    }
+    setSavingWebhook(false)
+  }
 
   async function handlePdfUpload(e) {
     const file = e.target.files?.[0]
@@ -87,12 +69,10 @@ export default function OnboardPage() {
         await new Promise((resolve, reject) => {
           const script = document.createElement('script')
           script.src = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js'
-          script.onload = resolve
-          script.onerror = reject
+          script.onload = resolve; script.onerror = reject
           document.head.appendChild(script)
         })
-        window.pdfjsLib.GlobalWorkerOptions.workerSrc =
-          'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js'
+        window.pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js'
       }
       const arrayBuffer = await file.arrayBuffer()
       const pdf = await window.pdfjsLib.getDocument({ data: arrayBuffer }).promise
@@ -106,34 +86,32 @@ export default function OnboardPage() {
       setPdfFile({ name: file.name, status: 'ready' })
     } catch (err) {
       setPdfFile({ name: file.name, status: 'error' })
-      setError('Could not read PDF. Try copying the text manually instead.')
+      setError('Could not read PDF. Try copying the text manually.')
     }
     e.target.value = ''
   }
 
-  async function testConnection(form) {
-    setTesting(true)
-    setTestResult(null)
+  async function handleSend() {
+    if (!text.trim() || !webhookUrl) return
+    setSending(true)
+    setError(null)
     try {
-      const res = await fetch(`${form.supabaseUrl}/functions/v1/capture-thought`, {
+      const res = await fetch(webhookUrl, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${form.supabaseAnonKey}` },
-        body: JSON.stringify({ text: 'Connection test' }),
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ body: { event: { text: text.trim() } } }),
       })
-      if (res.ok) setTestResult({ ok: true, message: 'Connected successfully!' })
-      else setTestResult({ ok: false, message: 'Could not reach your edge function. Check your URL and key.' })
-    } catch (e) {
-      setTestResult({ ok: false, message: 'Connection failed. Check your Supabase URL.' })
+      if (!res.ok) throw new Error(`Webhook returned ${res.status}`)
+      setSent(true)
+      setTimeout(() => {
+        setSent(false)
+        setText('')
+        setPdfFile(null)
+      }, 3000)
+    } catch (err) {
+      setError(`Failed to send: ${err.message}`)
     }
-    setTesting(false)
-  }
-
-  function saveConfig(e) {
-    e.preventDefault()
-    localStorage.setItem('open-brain-config', JSON.stringify(configForm))
-    setConfig(configForm)
-    setShowConfig(false)
-    setTestResult(null)
+    setSending(false)
   }
 
   async function handleSignOut() {
@@ -141,225 +119,326 @@ export default function OnboardPage() {
     router.push('/')
   }
 
-  async function extractThoughts() {
-    if (!text.trim() || !config) return
-    setStep('extracting')
-    setError(null)
-    try {
-      const res = await fetch('/api/extract', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text, anthropicKey: config.anthropicKey }),
-      })
-      const data = await res.json()
-      if (!res.ok) {
-        setError(data.error || 'Extraction failed.')
-        setStep('input')
-        if (res.status === 401) setShowConfig(true)
-        return
-      }
-      setThoughts(data.thoughts)
-      setTotalCount(Object.values(data.thoughts).flat().length)
-      setStep('review')
-    } catch (e) {
-      setError('Extraction failed. Please try again.')
-      setStep('input')
-    }
-  }
-
-  async function saveThought(category, thought, index) {
-    const key = `${category}-${index}`
-    setSaving(s => ({ ...s, [key]: true }))
-    try {
-      await fetch(`${config.supabaseUrl}/functions/v1/capture-thought`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${config.supabaseAnonKey}` },
-        body: JSON.stringify({ text: thought }),
-      })
-      setSaved(s => ({ ...s, [key]: true }))
-      setSaveCount(c => c + 1)
-    } catch (e) {}
-    finally { setSaving(s => ({ ...s, [key]: false })) }
-  }
-
-  async function saveAll() {
-    setStep('saving')
-    const all = []
-    Object.entries(thoughts).forEach(([cat, items]) => {
-      items.forEach((t, i) => { if (!saved[`${cat}-${i}`]) all.push({ cat, t, i }) })
-    })
-    for (const { cat, t, i } of all) {
-      await saveThought(cat, t, i)
-      await new Promise(r => setTimeout(r, 200))
-    }
-    setStep('done')
-  }
-
-  function removeThought(cat, i) {
-    setThoughts(prev => ({ ...prev, [cat]: prev[cat].filter((_, idx) => idx !== i) }))
-  }
-
-  function reset() {
-    setText(''); setStep('input'); setThoughts(null)
-    setSaving({}); setSaved({}); setSaveCount(0); setTotalCount(0); setError(null); setPdfFile(null)
-  }
-
   if (!user) return (
-    <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-      <div className="spinner" />
+    <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#f0fafa' }}>
+      <div style={{ width: 36, height: 36, border: '3px solid #d4ecf0', borderTopColor: '#16a0a7', borderRadius: '50%', animation: 'spin 0.8s linear infinite' }} />
+      <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
     </div>
   )
 
-  return (
-    <div style={{ minHeight: '100vh', background: '#0a0a0f' }}>
-      <div style={{ borderBottom: '1px solid #1e1e2e', padding: '18px 32px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', background: 'linear-gradient(180deg, #0d0d18 0%, #0a0a0f 100%)' }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-          <div style={{ width: 32, height: 32, borderRadius: '50%', background: 'radial-gradient(circle at 40% 40%, #6366f1, #312e81)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 14 }}>🧠</div>
-          <div>
-            <div style={{ fontSize: 13, fontWeight: 600, letterSpacing: '0.05em', color: '#c4b5fd' }}>OPEN BRAIN</div>
-            <div style={{ fontSize: 10, color: '#4a4a6a', letterSpacing: '0.12em' }}>ONBOARDING</div>
-          </div>
-        </div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
-          <span style={{ fontSize: 12, color: '#4a4a6a' }}>{user.email}</span>
-          <button onClick={() => { setShowConfig(true); setTestResult(null) }} style={{ background: 'none', border: `1px solid ${config ? '#2a2a4a' : '#5d2020'}`, borderRadius: 4, padding: '5px 12px', color: config ? '#6b6b8a' : '#f87171', fontSize: 11, fontFamily: 'Georgia, serif', cursor: 'pointer', letterSpacing: '0.06em' }}>{config ? 'Settings' : '⚠ Connect Brain'}</button>
-          <button onClick={handleSignOut} style={{ background: 'none', border: 'none', color: '#3a3a5a', fontSize: 12, cursor: 'pointer', fontFamily: 'Georgia, serif' }}>Sign out</button>
-        </div>
-      </div>
+  const charCount = text.length
+  const isLong = charCount > 2000
 
-      {showConfig && (
-        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.85)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 50, padding: 20 }}>
-          <div style={{ background: '#0f0f1a', border: '1px solid #1e1e35', borderRadius: 12, padding: '36px 32px', width: '100%', maxWidth: 480, maxHeight: '90vh', overflowY: 'auto' }}>
-            <h2 style={{ fontSize: 18, fontWeight: 400, marginBottom: 6, color: '#e8e4d9' }}>Connect your brain</h2>
-            <div style={{ background: '#0d0d18', border: '1px solid #1a1a35', borderRadius: 6, padding: '12px 14px', marginBottom: 24 }}>
-              <p style={{ color: '#6b6b8a', fontSize: 12, lineHeight: 1.6 }}>🔒 Your credentials are stored <strong style={{ color: '#a5b4fc' }}>only in your browser</strong> — never sent to our servers.</p>
-            </div>
-            <form onSubmit={saveConfig} style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
-              {CONFIG_FIELDS.map(field => (
-                <div key={field.key}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
-                    <label style={{ fontSize: 11, color: '#6b6b8a', letterSpacing: '0.08em' }}>{field.label.toUpperCase()}</label>
-                    <button type="button" onClick={() => setExpandedHelp(expandedHelp === field.key ? null : field.key)} style={{ background: 'none', border: 'none', color: '#4a4a6a', fontSize: 11, cursor: 'pointer', fontFamily: 'Georgia, serif' }}>{expandedHelp === field.key ? 'Hide ↑' : 'Where is this? ↓'}</button>
-                  </div>
-                  {expandedHelp === field.key && (
-                    <div style={{ background: '#0a0a14', border: '1px solid #1a1a2e', borderRadius: 6, padding: '10px 12px', marginBottom: 8, fontSize: 12, color: '#6b6b8a', lineHeight: 1.6 }}>
-                      {field.help}{' '}<a href={field.link} target="_blank" rel="noreferrer" style={{ color: '#6366f1', textDecoration: 'none' }}>{field.linkLabel}</a>
-                    </div>
-                  )}
-                  <input type={field.type} placeholder={field.placeholder} value={configForm[field.key]} onChange={e => setConfigForm(f => ({ ...f, [field.key]: e.target.value }))} required style={{ width: '100%', padding: '11px 14px', background: '#0a0a0f', border: '1px solid #1e1e35', borderRadius: 6, color: '#e8e4d9', fontFamily: 'Georgia, serif', fontSize: 13, outline: 'none' }} onFocus={e => e.target.style.borderColor = '#6366f1'} onBlur={e => e.target.style.borderColor = '#1e1e35'} />
-                </div>
-              ))}
-              <div>
-                <button type="button" onClick={() => testConnection(configForm)} disabled={testing || !configForm.supabaseUrl || !configForm.supabaseAnonKey} style={{ background: 'none', border: '1px solid #2a2a4a', borderRadius: 6, padding: '9px 18px', color: testing ? '#4a4a6a' : '#a5b4fc', fontSize: 12, fontFamily: 'Georgia, serif', cursor: testing ? 'not-allowed' : 'pointer', letterSpacing: '0.06em' }}>{testing ? 'Testing...' : 'Test Connection'}</button>
-                {testResult && (<div style={{ marginTop: 10, padding: '10px 12px', background: testResult.ok ? '#0d1a0d' : '#1a0f0f', border: `1px solid ${testResult.ok ? '#1a3a1a' : '#3d1515'}`, borderRadius: 6, fontSize: 12, color: testResult.ok ? '#4ade80' : '#f87171' }}>{testResult.ok ? '✓ ' : '✗ '}{testResult.message}</div>)}
+  return (
+    <div style={{ minHeight: '100vh', background: 'linear-gradient(135deg, #f0fafa 0%, #e8f4f8 40%, #f5fbf5 100%)', fontFamily: "'DM Sans', sans-serif" }}>
+      <style>{`
+        @import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500;600&family=Syne:wght@700;800&display=swap');
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        textarea::placeholder { color: #9bb8c2; }
+        textarea:focus, input:focus { outline: none; }
+        .send-btn:hover:not(:disabled) { transform: translateY(-1px); box-shadow: 0 8px 24px rgba(22,160,167,0.3); }
+        .send-btn { transition: all 0.2s; }
+        .nav-btn:hover { background: #f0f8fa !important; }
+        .badge { display: inline-flex; align-items: center; gap: 5px; padding: 4px 10px; border-radius: 20px; font-size: 11px; font-weight: 600; letter-spacing: 0.05em; }
+        @keyframes spin { to { transform: rotate(360deg); } }
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+        .fade-in { animation: fadeIn 0.4s ease; }
+        @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.5; } }
+      `}</style>
+
+      {/* Setup Modal */}
+      {showSetup && (
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(26,58,92,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 50, padding: 20, backdropFilter: 'blur(4px)' }}>
+          <div className="fade-in" style={{ background: 'white', borderRadius: 20, padding: '40px 36px', width: '100%', maxWidth: 480, boxShadow: '0 20px 60px rgba(26,58,92,0.2)' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 8 }}>
+              <div style={{ width: 40, height: 40, background: 'linear-gradient(135deg, #16a0a7, #1a3a5c)', borderRadius: 12, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2.5"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
               </div>
+              <div>
+                <h2 style={{ fontFamily: "'Syne', sans-serif", fontSize: 20, fontWeight: 700, color: '#1a3a5c' }}>Connect your webhook</h2>
+                <p style={{ fontSize: 13, color: '#7a9aaa' }}>One-time setup</p>
+              </div>
+            </div>
+
+            <div style={{ background: '#f0fafa', border: '1px solid #d4ecf0', borderRadius: 12, padding: '14px 16px', margin: '20px 0' }}>
+              <p style={{ fontSize: 13, color: '#5a8a9a', lineHeight: 1.6 }}>
+                Paste your <strong style={{ color: '#1a3a5c' }}>n8n webhook Production URL</strong>. All captures will POST directly to this URL — no API keys needed here.
+              </p>
+            </div>
+
+            <form onSubmit={saveWebhook}>
+              <label style={{ fontSize: 11, fontWeight: 600, color: '#5a8a9a', letterSpacing: '0.08em', display: 'block', marginBottom: 8 }}>N8N WEBHOOK URL</label>
+              <input
+                type="url" required
+                placeholder="https://your-n8n.railway.app/webhook/..."
+                value={webhookInput}
+                onChange={e => setWebhookInput(e.target.value)}
+                style={{
+                  width: '100%', padding: '13px 16px',
+                  background: '#f7fbfc', border: '1.5px solid #d4ecf0',
+                  borderRadius: 10, color: '#1a3a5c', fontSize: 14,
+                  fontFamily: "'DM Sans', sans-serif",
+                  marginBottom: 20,
+                  transition: 'border-color 0.2s',
+                }}
+                onFocus={e => e.target.style.borderColor = '#16a0a7'}
+                onBlur={e => e.target.style.borderColor = '#d4ecf0'}
+              />
               <div style={{ display: 'flex', gap: 10 }}>
-                <button type="submit" style={{ flex: 1, padding: '12px', background: 'linear-gradient(135deg, #6366f1, #4f46e5)', color: '#fff', border: 'none', borderRadius: 6, fontFamily: 'Georgia, serif', fontSize: 14, letterSpacing: '0.06em', cursor: 'pointer' }}>Save & Connect</button>
-                {config && (<button type="button" onClick={() => { setShowConfig(false); setTestResult(null) }} style={{ padding: '12px 20px', background: 'none', border: '1px solid #2a2a4a', borderRadius: 6, color: '#6b6b8a', fontFamily: 'Georgia, serif', fontSize: 14, cursor: 'pointer' }}>Cancel</button>)}
+                <button type="submit" disabled={savingWebhook} style={{
+                  flex: 1, padding: '13px',
+                  background: 'linear-gradient(135deg, #16a0a7, #1a3a5c)',
+                  color: 'white', border: 'none', borderRadius: 10,
+                  fontSize: 14, fontWeight: 600, fontFamily: "'DM Sans', sans-serif",
+                  cursor: savingWebhook ? 'not-allowed' : 'pointer',
+                }}>
+                  {savingWebhook ? 'Saving...' : 'Save & Connect →'}
+                </button>
+                {webhookSaved && (
+                  <button type="button" onClick={() => setShowSetup(false)} style={{
+                    padding: '13px 20px', background: 'white',
+                    border: '1.5px solid #d4ecf0', borderRadius: 10,
+                    color: '#5a8a9a', fontSize: 14, cursor: 'pointer',
+                    fontFamily: "'DM Sans', sans-serif",
+                  }}>Cancel</button>
+                )}
               </div>
             </form>
           </div>
         </div>
       )}
 
-      <div style={{ maxWidth: 780, margin: '0 auto', padding: '48px 32px' }}>
-        {step === 'input' && (
-          <div>
-            <h1 style={{ fontSize: 30, fontWeight: 400, marginBottom: 8, background: 'linear-gradient(135deg, #e8e4d9 0%, #a5b4fc 100%)', WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent' }}>Seed your brain.</h1>
-            <p style={{ color: '#6b6b8a', fontSize: 15, marginBottom: 36, lineHeight: 1.7 }}>Paste your LinkedIn profile, resume, job description, or any professional bio. Claude will extract structured context and save each insight as a searchable memory.</p>
-            <div style={{ display: 'flex', gap: 16, marginBottom: 20, flexWrap: 'wrap' }}>
-              {CATEGORIES.map(c => (<div key={c.id} style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, color: '#6b6b8a', letterSpacing: '0.08em' }}><span style={{ color: '#6366f1' }}>{c.icon}</span>{c.label.toUpperCase()}</div>))}
+      {/* Header */}
+      <header style={{
+        background: 'white',
+        borderBottom: '1px solid #e8f0f4',
+        padding: '0 32px',
+        height: 64,
+        display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+        boxShadow: '0 1px 8px rgba(26,58,92,0.06)',
+      }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+          <svg width="32" height="32" viewBox="0 0 100 100" fill="none">
+            <path d="M50 10 L80 30 L80 50 Q80 75 50 88 Q20 75 20 50 L20 30 Z" fill="#16a0a7" opacity="0.15"/>
+            <path d="M50 18 L74 34 L74 50 Q74 70 50 82 Q26 70 26 50 L26 34 Z" fill="none" stroke="#16a0a7" strokeWidth="2.5"/>
+            <path d="M38 50 L46 58 L62 42" stroke="#1a3a5c" strokeWidth="3.5" strokeLinecap="round" strokeLinejoin="round"/>
+          </svg>
+          <span style={{ fontFamily: "'Syne', sans-serif", fontSize: 18, fontWeight: 800, color: '#1a3a5c' }}>BrainDump</span>
+        </div>
+
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+          {webhookSaved ? (
+            <span className="badge" style={{ background: '#f0fdf4', color: '#16a34a', border: '1px solid #bbf7d0' }}>
+              <span style={{ width: 6, height: 6, borderRadius: '50%', background: '#16a34a', display: 'inline-block' }} />
+              Webhook connected
+            </span>
+          ) : (
+            <span className="badge" style={{ background: '#fff7ed', color: '#ea580c', border: '1px solid #fed7aa' }}>
+              ⚠ No webhook
+            </span>
+          )}
+          <button className="nav-btn" onClick={() => { setShowSetup(true) }} style={{
+            background: 'white', border: '1.5px solid #d4ecf0', borderRadius: 8,
+            padding: '6px 14px', color: '#5a8a9a', fontSize: 13, fontWeight: 500,
+            cursor: 'pointer', fontFamily: "'DM Sans', sans-serif", transition: 'background 0.15s',
+          }}>Settings</button>
+          <button className="nav-btn" onClick={handleSignOut} style={{
+            background: 'white', border: '1.5px solid #d4ecf0', borderRadius: 8,
+            padding: '6px 14px', color: '#5a8a9a', fontSize: 13, fontWeight: 500,
+            cursor: 'pointer', fontFamily: "'DM Sans', sans-serif", transition: 'background 0.15s',
+          }}>Sign out</button>
+        </div>
+      </header>
+
+      {/* Main */}
+      <main style={{ maxWidth: 760, margin: '0 auto', padding: '52px 24px' }}>
+
+        {/* Hero */}
+        <div style={{ marginBottom: 40 }}>
+          <h1 style={{
+            fontFamily: "'Syne', sans-serif",
+            fontSize: 42, fontWeight: 800,
+            color: '#1a3a5c',
+            letterSpacing: '-0.02em',
+            lineHeight: 1.1,
+            marginBottom: 12,
+          }}>
+            Dump your brain.
+          </h1>
+          <p style={{ fontSize: 17, color: '#5a8a9a', lineHeight: 1.6, maxWidth: 560 }}>
+            Paste anything — a meeting transcript, resume, article, or stream of consciousness. It gets sent to your n8n brain and stored as searchable memories.
+          </p>
+        </div>
+
+        {/* Info pills */}
+        <div style={{ display: 'flex', gap: 10, marginBottom: 28, flexWrap: 'wrap' }}>
+          {[
+            { icon: '⚡', label: 'Short text saved instantly' },
+            { icon: '🧠', label: 'Long text split into atomic memories' },
+            { icon: '🔍', label: 'Searchable by meaning via MCP' },
+          ].map(({ icon, label }) => (
+            <div key={label} style={{
+              display: 'flex', alignItems: 'center', gap: 6,
+              background: 'white', border: '1px solid #e8f0f4',
+              borderRadius: 20, padding: '6px 14px',
+              fontSize: 12, color: '#5a8a9a', fontWeight: 500,
+              boxShadow: '0 1px 4px rgba(26,58,92,0.05)',
+            }}>
+              <span>{icon}</span>{label}
             </div>
-            <div style={{ position: 'relative' }}>
-              <textarea value={text} onChange={e => { setText(e.target.value); if (pdfFile) setPdfFile(null) }} placeholder="Paste your LinkedIn About section, full profile export, resume text, current job description, or any combination..." style={{ width: '100%', height: 280, background: '#0f0f1a', border: '1px solid #1e1e35', borderRadius: 8, color: '#e8e4d9', fontFamily: 'Georgia, serif', fontSize: 14, lineHeight: 1.7, padding: '20px', paddingBottom: '52px', resize: 'vertical', outline: 'none' }} onFocus={e => e.target.style.borderColor = '#6366f1'} onBlur={e => e.target.style.borderColor = '#1e1e35'} />
-              <div style={{ position: 'absolute', bottom: 0, left: 0, right: 0, padding: '10px 16px', display: 'flex', alignItems: 'center', gap: 10, borderTop: '1px solid #1a1a2e', background: '#0d0d18', borderRadius: '0 0 8px 8px' }}>
-                <input ref={fileInputRef} type="file" accept=".pdf" onChange={handlePdfUpload} style={{ display: 'none' }} />
-                <button type="button" onClick={() => fileInputRef.current?.click()} disabled={pdfFile?.status === 'loading'} style={{ background: 'none', border: '1px solid #2a2a4a', borderRadius: 4, padding: '4px 12px', color: '#6b6b8a', fontSize: 11, fontFamily: 'Georgia, serif', cursor: pdfFile?.status === 'loading' ? 'not-allowed' : 'pointer', display: 'flex', alignItems: 'center', gap: 6, letterSpacing: '0.04em' }}>
-                  <span style={{ fontSize: 13 }}>📎</span>
-                  {pdfFile?.status === 'loading' ? 'Reading PDF...' : 'Attach PDF'}
-                </button>
-                {pdfFile && pdfFile.status !== 'loading' && (
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 11, color: pdfFile.status === 'ready' ? '#4ade80' : '#f87171' }}>
-                    <span>{pdfFile.status === 'ready' ? '✓' : '✗'}</span>
-                    <span style={{ color: '#6b6b8a', maxWidth: 240, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{pdfFile.name}</span>
-                    <button onClick={() => { setPdfFile(null); setText('') }} style={{ background: 'none', border: 'none', color: '#3a3a5a', fontSize: 14, cursor: 'pointer', padding: '0 4px' }}>×</button>
-                  </div>
-                )}
-                <span style={{ marginLeft: 'auto', fontSize: 11, color: '#2a2a4a' }}>{text.length > 0 ? `${text.length.toLocaleString()} chars` : ''}</span>
-              </div>
-            </div>
-            {error && (
-              <div style={{ background: '#1a0f0f', border: '1px solid #3d1515', borderRadius: 6, padding: '12px 16px', color: '#f87171', fontSize: 13, margin: '12px 0', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12 }}>
-                <span>{error}</span>
-                <button onClick={() => { setShowConfig(true); setTestResult(null) }} style={{ background: 'none', border: '1px solid #5d2020', borderRadius: 4, padding: '5px 12px', color: '#f87171', fontSize: 11, cursor: 'pointer', fontFamily: 'Georgia, serif', whiteSpace: 'nowrap' }}>Open Settings</button>
+          ))}
+        </div>
+
+        {/* Input card */}
+        <div style={{
+          background: 'white',
+          borderRadius: 20,
+          boxShadow: '0 4px 24px rgba(26,58,92,0.08)',
+          overflow: 'hidden',
+          border: '1px solid #e8f0f4',
+        }}>
+
+          {/* Textarea */}
+          <div style={{ position: 'relative' }}>
+            <textarea
+              value={text}
+              onChange={e => { setText(e.target.value); if (pdfFile) setPdfFile(null) }}
+              placeholder="Paste a meeting transcript, LinkedIn profile, resume, article, notes, or any text you want to remember..."
+              style={{
+                width: '100%',
+                minHeight: 280,
+                background: 'white',
+                border: 'none',
+                borderBottom: '1px solid #e8f0f4',
+                color: '#1a3a5c',
+                fontFamily: "'DM Sans', sans-serif",
+                fontSize: 15,
+                lineHeight: 1.7,
+                padding: '28px 28px 20px',
+                resize: 'vertical',
+              }}
+            />
+          </div>
+
+          {/* Toolbar */}
+          <div style={{
+            padding: '14px 20px',
+            display: 'flex', alignItems: 'center', gap: 12,
+            background: '#fafcfe',
+          }}>
+            <input ref={fileInputRef} type="file" accept=".pdf" onChange={handlePdfUpload} style={{ display: 'none' }} />
+            <button
+              type="button"
+              onClick={() => fileInputRef.current?.click()}
+              disabled={pdfFile?.status === 'loading'}
+              style={{
+                background: 'white', border: '1.5px solid #d4ecf0',
+                borderRadius: 8, padding: '7px 14px',
+                color: '#5a8a9a', fontSize: 12, fontWeight: 500,
+                fontFamily: "'DM Sans', sans-serif",
+                cursor: pdfFile?.status === 'loading' ? 'not-allowed' : 'pointer',
+                display: 'flex', alignItems: 'center', gap: 6,
+              }}
+            >
+              <span>📎</span>
+              {pdfFile?.status === 'loading' ? 'Reading...' : 'Attach PDF'}
+            </button>
+
+            {pdfFile && pdfFile.status !== 'loading' && (
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12 }}>
+                <span style={{ color: pdfFile.status === 'ready' ? '#16a34a' : '#dc2626' }}>
+                  {pdfFile.status === 'ready' ? '✓' : '✗'}
+                </span>
+                <span style={{ color: '#7a9aaa', maxWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{pdfFile.name}</span>
+                <button onClick={() => { setPdfFile(null); setText('') }} style={{ background: 'none', border: 'none', color: '#9bb8c2', cursor: 'pointer', fontSize: 16, lineHeight: 1 }}>×</button>
               </div>
             )}
-            <button onClick={extractThoughts} disabled={!text.trim() || !config} style={{ marginTop: 16, background: text.trim() && config ? 'linear-gradient(135deg, #6366f1, #4f46e5)' : '#1a1a2e', color: text.trim() && config ? '#fff' : '#3a3a5a', border: 'none', borderRadius: 6, padding: '14px 32px', fontSize: 14, fontFamily: 'Georgia, serif', letterSpacing: '0.06em', cursor: text.trim() && config ? 'pointer' : 'not-allowed' }}>{!config ? 'Connect your brain first →' : 'Extract & Review →'}</button>
-          </div>
-        )}
 
-        {step === 'extracting' && (
-          <div style={{ textAlign: 'center', padding: '80px 0' }}>
-            <div className="spinner" style={{ margin: '0 auto 24px' }} />
-            <div style={{ fontSize: 18, color: '#c4b5fd', marginBottom: 8 }}>Extracting context...</div>
-            <div style={{ fontSize: 13, color: '#4a4a6a' }}>Claude is reading your background and identifying key memories</div>
-          </div>
-        )}
-
-        {['review', 'saving', 'done'].includes(step) && thoughts && (
-          <div>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 32 }}>
-              <div>
-                <h2 style={{ fontSize: 24, fontWeight: 400, marginBottom: 6 }}>{step === 'done' ? 'Brain seeded ✓' : 'Review extracted memories'}</h2>
-                <p style={{ color: '#6b6b8a', fontSize: 13 }}>{step === 'done' ? `${saveCount} memories saved to your brain` : `${totalCount} memories extracted — remove any that aren't useful, then save all`}</p>
-              </div>
-              {step === 'review' && (<button onClick={saveAll} style={{ background: 'linear-gradient(135deg, #6366f1, #4f46e5)', color: '#fff', border: 'none', borderRadius: 6, padding: '12px 24px', fontSize: 13, fontFamily: 'Georgia, serif', letterSpacing: '0.06em', cursor: 'pointer' }}>Save All to Brain →</button>)}
-              {step === 'saving' && (<div style={{ fontSize: 13, color: '#6366f1' }}>Saving {saveCount} / {totalCount}...</div>)}
-            </div>
-            {CATEGORIES.map(cat => {
-              const items = thoughts[cat.id] || []
-              if (!items.length) return null
-              return (
-                <div key={cat.id} style={{ marginBottom: 36 }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 14, paddingBottom: 10, borderBottom: '1px solid #1a1a2a' }}>
-                    <span style={{ color: '#6366f1', fontSize: 16 }}>{cat.icon}</span>
-                    <span style={{ fontSize: 11, letterSpacing: '0.12em', color: '#6b6b8a', textTransform: 'uppercase' }}>{cat.label}</span>
-                    <span style={{ fontSize: 11, color: '#3a3a5a', marginLeft: 'auto' }}>{items.filter((_, i) => saved[`${cat.id}-${i}`]).length}/{items.length} saved</span>
-                  </div>
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-                    {items.map((thought, i) => {
-                      const key = `${cat.id}-${i}`
-                      const isSaved = saved[key]
-                      const isSaving = saving[key]
-                      return (
-                        <div key={i} style={{ display: 'flex', alignItems: 'flex-start', gap: 12, padding: '14px 16px', background: isSaved ? '#0d1a0d' : '#0f0f1a', border: `1px solid ${isSaved ? '#1a3a1a' : '#1a1a2e'}`, borderRadius: 6, transition: 'all 0.3s' }}>
-                          <div style={{ flex: 1, fontSize: 14, lineHeight: 1.6, color: isSaved ? '#6b8a6b' : '#c8c4bc' }}>{thought}</div>
-                          <div style={{ display: 'flex', gap: 6, flexShrink: 0 }}>
-                            {isSaved ? <span style={{ fontSize: 16, color: '#4ade80' }}>✓</span>
-                              : isSaving ? <span style={{ fontSize: 12, color: '#6366f1' }}>...</span>
-                              : step === 'review' ? (<>
-                                <button onClick={() => saveThought(cat.id, thought, i)} style={{ background: 'none', border: '1px solid #2a2a4a', borderRadius: 4, padding: '4px 10px', color: '#6366f1', fontSize: 11, cursor: 'pointer', fontFamily: 'Georgia, serif' }}>Save</button>
-                                <button onClick={() => removeThought(cat.id, i)} style={{ background: 'none', border: 'none', color: '#3a3a5a', fontSize: 14, cursor: 'pointer', padding: '4px 6px' }}>×</button>
-                              </>) : null}
-                          </div>
-                        </div>
-                      )
-                    })}
-                  </div>
+            <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 12 }}>
+              {charCount > 0 && (
+                <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                  <span style={{ fontSize: 12, color: '#9bb8c2' }}>{charCount.toLocaleString()} chars</span>
+                  {isLong && (
+                    <span className="badge" style={{ background: '#eff6ff', color: '#3b82f6', border: '1px solid #bfdbfe' }}>
+                      → atomic memories
+                    </span>
+                  )}
                 </div>
-              )
-            })}
-            {step === 'done' && (
-              <div style={{ marginTop: 32, padding: '24px', background: '#0d1a0d', border: '1px solid #1a3a1a', borderRadius: 8, textAlign: 'center' }}>
-                <div style={{ fontSize: 24, marginBottom: 10 }}>🧠</div>
-                <div style={{ fontSize: 16, color: '#4ade80', marginBottom: 6 }}>Brain seeded successfully</div>
-                <div style={{ fontSize: 13, color: '#4a6a4a', marginBottom: 20 }}>{saveCount} memories are now embedded and searchable from any connected AI tool</div>
-                <button onClick={reset} style={{ background: 'none', border: '1px solid #2a4a2a', borderRadius: 6, padding: '10px 24px', color: '#4ade80', fontSize: 13, fontFamily: 'Georgia, serif', letterSpacing: '0.06em', cursor: 'pointer' }}>+ Add More Context</button>
-              </div>
-            )}
+              )}
+
+              <button
+                className="send-btn"
+                onClick={handleSend}
+                disabled={!text.trim() || !webhookUrl || sending || sent}
+                style={{
+                  padding: '10px 24px',
+                  background: sent
+                    ? 'linear-gradient(135deg, #16a34a, #15803d)'
+                    : !text.trim() || !webhookUrl
+                    ? '#d4ecf0'
+                    : 'linear-gradient(135deg, #16a0a7, #1a3a5c)',
+                  color: !text.trim() || !webhookUrl ? '#9bb8c2' : 'white',
+                  border: 'none', borderRadius: 10,
+                  fontSize: 14, fontWeight: 600,
+                  fontFamily: "'DM Sans', sans-serif",
+                  cursor: !text.trim() || !webhookUrl || sending ? 'not-allowed' : 'pointer',
+                  display: 'flex', alignItems: 'center', gap: 8,
+                  minWidth: 120, justifyContent: 'center',
+                }}
+              >
+                {sent ? (
+                  <>✓ Sent!</>
+                ) : sending ? (
+                  <>
+                    <div style={{ width: 14, height: 14, border: '2px solid rgba(255,255,255,0.3)', borderTopColor: 'white', borderRadius: '50%', animation: 'spin 0.7s linear infinite' }} />
+                    Sending...
+                  </>
+                ) : !webhookUrl ? (
+                  'Setup required'
+                ) : (
+                  'Send to Brain →'
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
+
+        {/* Error */}
+        {error && (
+          <div className="fade-in" style={{
+            marginTop: 16,
+            background: '#fff5f5', border: '1px solid #fecaca',
+            borderRadius: 12, padding: '14px 18px',
+            color: '#dc2626', fontSize: 13,
+            display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+          }}>
+            <span>{error}</span>
+            <button onClick={() => setError(null)} style={{ background: 'none', border: 'none', color: '#dc2626', cursor: 'pointer', fontSize: 18 }}>×</button>
           </div>
         )}
-      </div>
+
+        {/* How it works */}
+        <div style={{ marginTop: 48 }}>
+          <h3 style={{ fontFamily: "'Syne', sans-serif", fontSize: 14, fontWeight: 700, color: '#9bb8c2', letterSpacing: '0.1em', marginBottom: 20 }}>HOW IT WORKS</h3>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 16 }}>
+            {[
+              { step: '01', title: 'Paste anything', desc: 'Text, transcripts, PDFs, notes — any length works.' },
+              { step: '02', title: 'Claude extracts', desc: 'Long content gets split into focused atomic memories.' },
+              { step: '03', title: 'Search by meaning', desc: 'Ask Claude "what do I know about X?" from any MCP tool.' },
+            ].map(({ step, title, desc }) => (
+              <div key={step} style={{
+                background: 'white', border: '1px solid #e8f0f4',
+                borderRadius: 14, padding: '20px',
+                boxShadow: '0 1px 4px rgba(26,58,92,0.04)',
+              }}>
+                <div style={{ fontFamily: "'Syne', sans-serif", fontSize: 28, fontWeight: 800, color: '#d4ecf0', marginBottom: 8 }}>{step}</div>
+                <div style={{ fontSize: 14, fontWeight: 600, color: '#1a3a5c', marginBottom: 6 }}>{title}</div>
+                <div style={{ fontSize: 13, color: '#7a9aaa', lineHeight: 1.5 }}>{desc}</div>
+              </div>
+            ))}
+          </div>
+        </div>
+      </main>
     </div>
   )
 }
