@@ -1,3 +1,5 @@
+import './globals.css'
+
 export const metadata = {
   title: 'BrainDump — Collect & Store Knowledge',
   description: 'Send anything to your personal AI memory system. Paste text, transcripts, PDFs — it all becomes searchable memory.',
