@@ -12,6 +12,19 @@ export default function Home() {
 
   const supabase = createClient()
 
+  async function handleForgotPassword() {
+    if (!email.trim()) { setError('Enter your email first, then click Forgot password.'); return }
+    setLoading(true)
+    setError(null)
+    setSuccess(null)
+    const { error } = await supabase.auth.resetPasswordForEmail(email, {
+      redirectTo: `${location.origin}/auth/callback`,
+    })
+    if (error) setError(error.message)
+    else setSuccess('Password reset link sent! Check your email.')
+    setLoading(false)
+  }
+
   async function handleSubmit(e) {
     e.preventDefault()
     setLoading(true)
@@ -209,7 +222,15 @@ export default function Home() {
             </button>
           </form>
 
-          <p style={{ textAlign: 'center', fontSize: 13, color: '#64748b', marginTop: 24 }}>
+          {mode === 'login' && (
+            <p style={{ textAlign: 'center', marginTop: 16 }}>
+              <button className="toggle-link" onClick={handleForgotPassword} style={{ fontSize: 13 }}>
+                Forgot password?
+              </button>
+            </p>
+          )}
+
+          <p style={{ textAlign: 'center', fontSize: 13, color: '#64748b', marginTop: mode === 'login' ? 12 : 24 }}>
             {mode === 'login' ? "Don't have an account? " : 'Already have an account? '}
             <button className="toggle-link" onClick={() => { setMode(mode === 'login' ? 'signup' : 'login'); setError(null); setSuccess(null) }}>
               {mode === 'login' ? 'Sign up' : 'Sign in'}
