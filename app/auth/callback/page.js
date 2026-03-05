@@ -14,20 +14,25 @@ export default function AuthCallback() {
     <div style={{
       minHeight: '100vh',
       display: 'flex', alignItems: 'center', justifyContent: 'center',
-      background: 'linear-gradient(135deg, #f0fafa 0%, #e8f4f8 100%)',
-      fontFamily: "'DM Sans', sans-serif",
+      background: 'radial-gradient(ellipse at 50% 0%, #0f1d32 0%, #060b18 70%)',
+      fontFamily: "'Inter', -apple-system, sans-serif",
     }}>
-      <div style={{ textAlign: 'center', color: '#5a8a9a' }}>
+      <style>{`
+        @keyframes spin { to { transform: rotate(360deg); } }
+        @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.3; } }
+      `}</style>
+      <div style={{ textAlign: 'center', color: '#94a3b8' }}>
         <div style={{
-          width: 40, height: 40,
-          border: '3px solid #d4ecf0',
+          width: 44, height: 44,
+          border: '2.5px solid rgba(22, 160, 167, 0.15)',
           borderTopColor: '#16a0a7',
           borderRadius: '50%',
           animation: 'spin 0.8s linear infinite',
-          margin: '0 auto 16px',
+          margin: '0 auto 20px',
         }} />
-        <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
-        <p>Signing you in...</p>
+        <p style={{ fontSize: 14, fontWeight: 500 }}>
+          Signing you in<span style={{ animation: 'pulse 1.5s infinite', display: 'inline-block' }}>...</span>
+        </p>
       </div>
     </div>
   )
