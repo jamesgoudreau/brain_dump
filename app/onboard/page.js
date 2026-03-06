@@ -99,7 +99,7 @@ export default function OnboardPage() {
       const res = await fetch(webhookUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ body: { event: { text: text.trim() } } }),
+        body: JSON.stringify({ event: { text: text.trim() } }),
       })
       if (!res.ok) throw new Error(`Webhook returned ${res.status}`)
       setSent(true)
